@@ -1,18 +1,40 @@
+#include <OneWire.h>
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 #include "config.h"
-#include <OneWire.h>
 
+OneWire ds(2);
+long lastUpdateTime = 0;
 
 WiFiClient espClient;
 PubSubClient client(espClient);
-OneWire ds(2); // Создаем объект OneWire для шины 1-Wire, с помощью которого будет осуществляться работа с датчиком
-
 long lastMsg = 0;
 char msg[50];
 int value = 0;
-long tme = 0;
-int stat = 0;
+
+char msgBuffer[20];
+float temperature;
+
+int detectTemperature(){
+  byte data[2]; // Место для значения температуры
+  ds.reset(); // Начинаем взаимодействие со сброса всех предыдущих команд и параметров
+  ds.write(0xCC); // Даем датчику DS18b20 команду пропустить поиск по адресу. В нашем случае только одно устрйоство 
+  ds.write(0x44); // Даем датчику DS18b20 команду измерить температуру. Само значение температуры мы еще не получаем - датчик его положит во внутреннюю память
+  delay(500); // Микросхема измеряет температуру, а мы ждем.  
+  ds.reset(); // Теперь готовимся получить значение измеренной температуры
+  ds.write(0xCC); 
+  ds.write(0xBE); // Просим передать нам значение регистров со значением температуры
+  // Получаем и считываем ответ
+  data[0] = ds.read(); // Читаем младший байт значения температуры
+  data[1] = ds.read(); // А теперь старший
+  // Формируем итоговое значение: 
+  //    - сперва "склеиваем" значение, 
+  //    - затем умножаем его на коэффициент, соответсвующий разрешающей способности (для 12 бит по умолчанию - это 0,0625)
+  float temperature =  ((data[1] << 8) | data[0]) * 0.0625;
+  // Выводим полученное значение температуры в монитор порта
+  Serial.println(temperature);
+  return temperature;
+  }
 
 void setup_wifi() {
   delay(10);
@@ -65,7 +87,7 @@ void reconnect() {
     Serial.print(clientId);
     Serial.print(mqtt_login);
     Serial.print(mqtt_pass);
-    if (client.connect("plazmer", "student", "rtf-123")) {  //TODO: use variables 
+    if (client.connect(clientId.c_str(), "student", "rtf-123")) {  //TODO: use variables 
       Serial.println("connected");
       client.publish(mqtt_topic_heartbeat, "reconnected");
       client.subscribe(mqtt_topic_in);
@@ -84,8 +106,6 @@ void setup() {
   setup_wifi();
   client.setServer(mqtt_server, mqtt_port);
   client.setCallback(callback);
-  tme=0;
-  state=0;
 }
 
 void loop() {
@@ -93,55 +113,17 @@ void loop() {
     reconnect();
   }
   client.loop();
-  
-  if (stat==0)
-  {
-	  temp();
-	  stat=1;
-	  tme = milis();
-  }
-  
-  if (stat==1)
-  {
-	  if (millis()-tme > 1000)
-	  {
-		  client.publish(mqtt_topic_out,say());
-		  stat=2;
-	  }	  
-  }
-  
-  if (stat==2) {
-	if (millis() - tme > 2000) {
-		stat=0;
-	}  
-  }
-   
-}
 
-void temp(){
-  // Определяем температуру от датчика DS18b20
-  byte data[2]; // Место для значения температуры
-  
-  ds.reset(); // Начинаем взаимодействие со сброса всех предыдущих команд и параметров
-  ds.write(0xCC); // Даем датчику DS18b20 команду пропустить поиск по адресу. В нашем случае только одно устрйоство 
-  ds.write(0x44); // Даем датчику DS18b20 команду измерить температуру. Само значение температуры мы еще не получаем - датчик его положит во внутреннюю память
-  
-  tme = millis();
-  stat=1;
-}
+  long now = millis();
+  if (now - lastMsg > 30000) {    //TODO: overflow long in 49 days
+    lastMsg = now;
+    ++value;
+    snprintf (msg, 50, "heartbeat #%ld", value);
+    Serial.print("Publish message: ");
+    Serial.println(msg);
+    client.publish(mqtt_topic_heartbeat, msg);
+  }
 
-float say() {
-  ds.reset(); // Теперь готовимся получить значение измеренной температуры
-  ds.write(0xCC); 
-  ds.write(0xBE); // Просим передать нам значение регистров со значением температуры
- 
-  // Получаем и считываем ответ
-  data[0] = ds.read(); // Читаем младший байт значения температуры
-  data[1] = ds.read(); // А теперь старший
- 
-  // Формируем итоговое значение: 
-  //    - сперва "склеиваем" значение, 
-  //    - затем умножаем его на коэффициент, соответсвующий разрешающей способности (для 12 бит по умолчанию - это 0,0625)
-  float temperature =  ((data[1] << 8) | data[0]) * 0.0625;
-  return temperature;
+   temperature = detectTemperature();
+   client.publish(mqtt_topic_out, dtostrf(temperature, 6, 2, msgBuffer));
 }
